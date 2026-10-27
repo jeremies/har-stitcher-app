@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HAR Video Stream Stitcher — Repair ABR Upswitch Freezes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="logo-group">
+        <div class="logo-icon">⚡</div>
+        <div class="title-group">
+          <h1>HAR Video Stream Stitcher</h1>
+          <p>Repair ABR upswitch stalls &amp; synthesize continuous HLS trajectories for har-player</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-blue">RFC 8216 HLS</span>
+        <span class="badge badge-purple">Zero-Build Client</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="main-content">
+
+    <!-- Technical Callout -->
+    <div class="info-callout">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+      </svg>
+      <div>
+        <strong>Why har-player freezes when switching resolutions (e.g., 720p ➔ 1080p):</strong>
+        In live recordings, only the segments actively requested by the browser's ABR algorithm exist in the HAR log. When the player engine reaches the switch point on the old variant track, it requests the next segment of that same track, receives an <strong>HTTP 404</strong>, and triggers fatal fragment retry loops.
+        This tool extracts the actual cross-variant trajectory, injects <code>#EXT-X-DISCONTINUITY</code> &amp; <code>#EXT-X-MAP</code>, and rewrites the master manifest so the player streams seamlessly.
+      </div>
+    </div>
+
+    <!-- Upload Section -->
+    <section class="upload-card" id="dropZone">
+      <input type="file" id="fileInput" accept=".har,application/json" class="hidden">
+      <div class="upload-icon-wrapper">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+        </svg>
+      </div>
+      <h2 class="upload-title">Drop your .har file here</h2>
+      <p class="upload-desc">Upload a recorded browser HAR with HLS streaming traffic to stitch its playback trajectory and export a patched HAR.</p>
+      <div class="btn-group">
+        <button type="button" class="btn btn-primary" id="browseBtn">
+          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          Choose .har File
+        </button>
+        <button type="button" class="btn btn-secondary" id="loadSampleBtn">
+          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
+          Load 720p ➔ 1080p Sample HAR
+        </button>
+      </div>
+    </section>
+
+    <!-- Results Dashboard (Hidden until HAR is parsed) -->
+    <div id="resultsDashboard" class="dashboard-container hidden">
+
+      <!-- Metrics Summary -->
+      <div class="metrics-grid">
+        <div class="metric-card" style="--card-accent: var(--accent-cyan);">
+          <div class="metric-label">Playable Duration</div>
+          <div class="metric-value" id="metricDuration">0.00s</div>
+          <div class="metric-sub" id="metricTimelineRange">Segments 0–0</div>
+        </div>
+        <div class="metric-card" style="--card-accent: var(--accent-emerald);">
+          <div class="metric-label">Stitched Chunks</div>
+          <div class="metric-value" id="metricSegments">0</div>
+          <div class="metric-sub" id="metricTargetDur">Target dur: 2s</div>
+        </div>
+        <div class="metric-card" style="--card-accent: var(--accent-violet);">
+          <div class="metric-label">Active Variants</div>
+          <div class="metric-value" id="metricVariants">0</div>
+          <div class="metric-sub" id="metricVariantBreakdown">None</div>
+        </div>
+        <div class="metric-card" style="--card-accent: var(--accent-amber);">
+          <div class="metric-label">Discontinuities</div>
+          <div class="metric-value" id="metricTransitions">0</div>
+          <div class="metric-sub">Variant boundaries</div>
+        </div>
+        <div class="metric-card" style="--card-accent: var(--accent-rose);">
+          <div class="metric-label">Gaps Detected</div>
+          <div class="metric-value" id="metricGaps">0</div>
+          <div class="metric-sub" id="metricGapsSub">0.0s skipped</div>
+        </div>
+      </div>
+
+      <!-- Interactive Trajectory Timeline -->
+      <section class="section-box">
+        <div class="section-header">
+          <div class="section-title">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+            Playback Trajectory Timeline
+          </div>
+          <div id="timelineLegend" style="display: flex; gap: 0.75rem; font-size: 0.75rem;"></div>
+        </div>
+        
+        <div class="timeline-track-container">
+          <div class="timeline-track" id="timelineTrack">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </div>
+
+        <!-- Segment Detail Inspector Drawer -->
+        <div id="segmentDetailDrawer" class="segment-detail-card hidden">
+          <div class="detail-item">
+            <strong>Sequence Index</strong>
+            <span id="detailIndex">#0</span>
+          </div>
+          <div class="detail-item">
+            <strong>Variant Track</strong>
+            <span id="detailVariant">720p</span>
+          </div>
+          <div class="detail-item">
+            <strong>Duration &amp; Offset</strong>
+            <span id="detailDuration">2.000s (0.00s - 2.00s)</span>
+          </div>
+          <div class="detail-item">
+            <strong>Segment URL</strong>
+            <span id="detailUrl">https://...</span>
+          </div>
+          <div class="detail-item">
+            <strong>HTTP Status &amp; Size</strong>
+            <span id="detailStatus">200 OK (625 KB)</span>
+          </div>
+          <div class="detail-item">
+            <strong>fMP4 Init Map</strong>
+            <span id="detailMap">None</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Manifest Inspector & Code Views -->
+      <section class="section-box">
+        <div class="section-header">
+          <div class="section-title">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+            Manifest Inspector &amp; Diff
+          </div>
+        </div>
+
+        <div class="tabs-nav">
+          <button type="button" class="tab-btn active" data-tab="tabStitched">Generated stitched_trajectory.m3u8</button>
+          <button type="button" class="tab-btn" data-tab="tabMasterDiff">Master Manifest Diff</button>
+          <button type="button" class="tab-btn" data-tab="tabVariants">Discovered Variants</button>
+        </div>
+
+        <!-- Tab 1: Stitched Trajectory -->
+        <div id="tabStitched" class="tab-pane">
+          <div class="code-view-container">
+            <div class="code-header">
+              <span>stitched_trajectory.m3u8 (RFC 8216)</span>
+              <button class="code-copy-btn" data-copy-target="stitchedCode">Copy Manifest</button>
+            </div>
+            <pre class="code-block" id="stitchedCode"></pre>
+          </div>
+        </div>
+
+        <!-- Tab 2: Master Diff -->
+        <div id="tabMasterDiff" class="tab-pane hidden">
+          <div class="diff-grid">
+            <div class="code-view-container">
+              <div class="code-header">
+                <span>Original Master Manifest (in HAR)</span>
+                <button class="code-copy-btn" data-copy-target="origMasterCode">Copy</button>
+              </div>
+              <pre class="code-block" id="origMasterCode"></pre>
+            </div>
+            <div class="code-view-container">
+              <div class="code-header">
+                <span>Rewritten Master Manifest (Points to Stitched Stream)</span>
+                <button class="code-copy-btn" data-copy-target="rewrittenMasterCode">Copy</button>
+              </div>
+              <pre class="code-block" id="rewrittenMasterCode"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Variants -->
+        <div id="tabVariants" class="tab-pane hidden">
+          <div id="variantsContainer" style="display: flex; flex-direction: column; gap: 1rem;"></div>
+        </div>
+      </section>
+
+      <!-- Action Bar -->
+      <div class="action-bar">
+        <div>
+          <span style="font-size: 0.9rem; font-weight: 600; color: #fff;">Ready to export!</span>
+          <p style="font-size: 0.78rem; color: var(--text-muted);" id="exportSummary">HAR contains rewritten master manifest and new stitched playlist entry.</p>
+        </div>
+        <div class="btn-group">
+          <button type="button" class="btn btn-secondary" id="resetBtn">Upload Another</button>
+          <button type="button" class="btn btn-secondary" id="downloadM3u8Btn">
+            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            Download .m3u8
+          </button>
+          <button type="button" class="btn btn-success" id="downloadHarBtn">
+            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            Download Patched .har
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <footer class="app-footer">
+    HAR Video Stream Stitcher &bull; Client-Side Browser Tool &bull; Fixes 404 stalls on ABR transitions for har-player
+  </footer>
+
+  <script src="stitcher.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
+
