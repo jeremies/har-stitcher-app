@@ -205,10 +205,15 @@
       var lines = item.content.split(/\r?\n/).map(function (l) { return l.trim(); });
       
       var isMaster = false;
+      var masterVersion = 3;
+      var masterHasIndependent = false;
       for (var l = 0; l < lines.length; l++) {
         if (lines[l].startsWith('#EXT-X-STREAM-INF') || lines[l].startsWith('#EXT-X-I-FRAME-STREAM-INF')) {
           isMaster = true;
-          break;
+        } else if (lines[l].startsWith('#EXT-X-VERSION:')) {
+          masterVersion = parseInt(lines[l].split(':')[1], 10) || 3;
+        } else if (lines[l].startsWith('#EXT-X-INDEPENDENT-SEGMENTS')) {
+          masterHasIndependent = true;
         }
       }
 
@@ -242,7 +247,9 @@
           normalizedUrl: item.normalizedUrl,
           entry: item.entry,
           content: item.content,
-          variants: declaredVariants
+          variants: declaredVariants,
+          version: masterVersion,
+          hasIndependentSegments: masterHasIndependent
         });
 
       } else {
@@ -251,26 +258,45 @@
         var targetDuration = 0;
         var playlistType = null;
         var isEndlist = false;
+        var version = null;
+        var hasIndependentSegments = false;
         var segments = [];
         var currentExtinf = null;
         var currentMap = null;
         var hasDiscontinuityNext = false;
         var currentByteRange = null;
+        var currentActiveKey = null;
+        var currentExplicitKeyTag = null;
 
         for (var j = 0; j < lines.length; j++) {
           var vLine = lines[j];
           if (!vLine) continue;
 
-          if (vLine.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+          if (vLine.startsWith('#EXT-X-VERSION:')) {
+            version = parseInt(vLine.split(':')[1], 10) || 3;
+          } else if (vLine.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
             mediaSequence = parseInt(vLine.split(':')[1], 10) || 0;
           } else if (vLine.startsWith('#EXT-X-TARGETDURATION:')) {
             targetDuration = parseFloat(vLine.split(':')[1]) || 0;
           } else if (vLine.startsWith('#EXT-X-PLAYLIST-TYPE:')) {
             playlistType = vLine.split(':')[1].trim();
+          } else if (vLine.startsWith('#EXT-X-INDEPENDENT-SEGMENTS')) {
+            hasIndependentSegments = true;
           } else if (vLine.startsWith('#EXT-X-ENDLIST')) {
             isEndlist = true;
           } else if (vLine.startsWith('#EXT-X-DISCONTINUITY')) {
             hasDiscontinuityNext = true;
+          } else if (vLine.startsWith('#EXT-X-KEY:')) {
+            currentExplicitKeyTag = vLine;
+            var keyAttrs = parseAttributes(vLine.substring(11));
+            currentActiveKey = {
+              rawTag: vLine,
+              attributes: keyAttrs,
+              method: keyAttrs.METHOD,
+              uri: keyAttrs.URI,
+              resolvedUri: resolveUrl(keyAttrs.URI, item.url),
+              iv: keyAttrs.IV
+            };
           } else if (vLine.startsWith('#EXT-X-MAP:')) {
             var mapAttrs = parseAttributes(vLine.substring(11));
             var mapUri = mapAttrs.URI || '';
@@ -288,6 +314,7 @@
             var durStr = commaIdx !== -1 ? vLine.substring(8, commaIdx) : vLine.substring(8);
             var title = commaIdx !== -1 ? vLine.substring(commaIdx + 1) : '';
             currentExtinf = {
+              rawTag: vLine,
               duration: parseFloat(durStr) || 0,
               title: title
             };
@@ -302,11 +329,15 @@
               index: segIndex,
               localIndex: segments.length,
               duration: currentExtinf.duration,
+              rawExtinfTag: currentExtinf.rawTag,
               title: currentExtinf.title,
               uri: segUri,
               resolvedUrl: segResolved,
               normalizedUrl: segNormalized,
               hasDiscontinuity: hasDiscontinuityNext,
+              key: currentActiveKey,
+              rawKeyTag: currentExplicitKeyTag,
+              hasExplicitKey: !!currentExplicitKeyTag,
               map: currentMap,
               byteRange: currentByteRange,
               isRecorded: !!recordedMatch && (recordedMatch.status >= 200 && recordedMatch.status < 300),
@@ -318,6 +349,7 @@
             currentExtinf = null;
             hasDiscontinuityNext = false;
             currentByteRange = null;
+            currentExplicitKeyTag = null;
           }
         }
 
@@ -337,6 +369,8 @@
           entry: item.entry,
           content: item.content,
           label: variantLabel,
+          version: version,
+          hasIndependentSegments: hasIndependentSegments,
           mediaSequence: mediaSequence,
           targetDuration: targetDuration,
           playlistType: playlistType,
@@ -489,10 +523,15 @@
           variantLabel: currentVariantKey,
           segment: chosen.segment,
           duration: chosen.segment.duration,
+          rawExtinfTag: chosen.segment.rawExtinfTag,
           resolvedUrl: chosen.segment.resolvedUrl,
           uri: chosen.segment.uri,
+          key: chosen.segment.key,
+          rawKeyTag: chosen.segment.rawKeyTag,
+          hasExplicitKey: chosen.segment.hasExplicitKey,
           map: chosen.segment.map,
           byteRange: chosen.segment.byteRange,
+          hasDiscontinuity: chosen.segment.hasDiscontinuity,
           isTransition: isTransition,
           prevVariantLabel: prevVariantKey
         });
@@ -563,13 +602,15 @@
       };
     }
 
+    var firstVariant = validSegments[0].variant || {};
+
     var maxDuration = 0;
     for (var i = 0; i < validSegments.length; i++) {
       if (validSegments[i].duration > maxDuration) {
         maxDuration = validSegments[i].duration;
       }
     }
-    var targetDuration = Math.ceil(maxDuration) || 6;
+    var targetDuration = firstVariant.targetDuration || Math.ceil(maxDuration) || 6;
     var firstSeq = validSegments[0].index;
 
     // Detect if any segment uses fMP4 (#EXT-X-MAP)
@@ -581,16 +622,27 @@
       }
     }
 
+    var version = firstVariant.version;
+    if (!version) {
+      version = hasFmp4Map ? 7 : 3;
+    }
+
     var lines = [
       '#EXTM3U',
-      hasFmp4Map ? '#EXT-X-VERSION:7' : '#EXT-X-VERSION:6',
+      '#EXT-X-VERSION:' + version,
       '#EXT-X-TARGETDURATION:' + targetDuration,
-      '#EXT-X-MEDIA-SEQUENCE:' + firstSeq,
-      '#EXT-X-PLAYLIST-TYPE:VOD',
-      '#EXT-X-INDEPENDENT-SEGMENTS'
+      '#EXT-X-MEDIA-SEQUENCE:' + firstSeq
     ];
 
+    if (firstVariant.playlistType) {
+      lines.push('#EXT-X-PLAYLIST-TYPE:' + firstVariant.playlistType);
+    }
+    if (firstVariant.hasIndependentSegments) {
+      lines.push('#EXT-X-INDEPENDENT-SEGMENTS');
+    }
+
     var currentActiveMapUri = null;
+    var currentActiveKeyTag = null;
     var hadGap = false;
     var lastVariantLabel = null;
 
@@ -603,7 +655,20 @@
       }
 
       var variantChanged = lastVariantLabel !== null && lastVariantLabel !== item.variantLabel;
-      var needsDiscontinuity = variantChanged || hadGap;
+      var needsDiscontinuity = variantChanged || hadGap || item.hasDiscontinuity;
+
+      // User preference: Place #EXT-X-KEY before #EXT-X-DISCONTINUITY (Key -> Discontinuity -> Extinf)
+      var keyTagToEmit = null;
+      if (item.rawKeyTag) {
+        keyTagToEmit = item.rawKeyTag;
+      } else if (item.key && item.key.rawTag && item.key.rawTag !== currentActiveKeyTag) {
+        keyTagToEmit = item.key.rawTag;
+      }
+
+      if (keyTagToEmit) {
+        lines.push(keyTagToEmit);
+        currentActiveKeyTag = keyTagToEmit;
+      }
 
       if (needsDiscontinuity) {
         lines.push('#EXT-X-DISCONTINUITY');
@@ -628,15 +693,27 @@
         lines.push('#EXT-X-BYTERANGE:' + item.byteRange);
       }
 
-      // Extinf and segment URI
-      lines.push('#EXTINF:' + item.duration.toFixed(3) + ',');
-      // Always use the absolute resolved URL so har-player can match request.url accurately
-      lines.push(item.resolvedUrl);
+      // Extinf: preserve exact source line if available
+      if (item.rawExtinfTag) {
+        lines.push(item.rawExtinfTag);
+      } else {
+        lines.push('#EXTINF:' + item.duration.toFixed(3) + ',');
+      }
+
+      // Segment URI: user preference is verbatim URI from source
+      if (options.useAbsoluteUrls) {
+        lines.push(item.resolvedUrl);
+      } else {
+        lines.push(item.uri);
+      }
 
       lastVariantLabel = item.variantLabel;
     }
 
-    lines.push('#EXT-X-ENDLIST');
+    if (firstVariant.isEndlist || firstVariant.playlistType === 'VOD') {
+      lines.push('#EXT-X-ENDLIST');
+    }
+
     var playlistText = lines.join('\n') + '\n';
 
     return {
@@ -692,13 +769,19 @@
         if (sorted[0].resolution) resolution = sorted[0].resolution;
       }
 
-      rewrittenMasterContent = [
+      var masterVersion = primaryMaster.version || 3;
+      var rewrittenMasterLines = [
         '#EXTM3U',
-        '#EXT-X-VERSION:6',
-        '#EXT-X-INDEPENDENT-SEGMENTS',
+        '#EXT-X-VERSION:' + masterVersion
+      ];
+      if (primaryMaster.hasIndependentSegments) {
+        rewrittenMasterLines.push('#EXT-X-INDEPENDENT-SEGMENTS');
+      }
+      rewrittenMasterLines.push(
         '#EXT-X-STREAM-INF:BANDWIDTH=' + maxBandwidth + ',RESOLUTION=' + resolution + ',CODECS="' + codecs + '",NAME="Stitched Trajectory"',
         stitchedManifestUrl
-      ].join('\n') + '\n';
+      );
+      rewrittenMasterContent = rewrittenMasterLines.join('\n') + '\n';
 
       // Rewrite content in the actual master manifest entry in the HAR
       for (var i = 0; i < harCopy.log.entries.length; i++) {
