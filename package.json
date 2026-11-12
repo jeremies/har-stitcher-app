@@ -1,0 +1,17 @@
+{
+  "name": "har-stitcher-app",
+  "version": "1.0.0",
+  "description": "Repair ABR transition freezes in HAR recordings by stitching HLS variant segments into a single playlist",
+  "main": "stitcher.js",
+  "bin": {
+    "har-stitch": "cli.js"
+  },
+  "scripts": {
+    "test": "node sample-test.js && node cli-test.js"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

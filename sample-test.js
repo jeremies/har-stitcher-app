@@ -230,4 +230,8 @@ function runTests() {
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY! 🚀');
 }
 
-runTests();
+module.exports = { createSampleHar };
+
+if (require.main === module) {
+  runTests();
+}

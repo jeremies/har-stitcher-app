@@ -62,7 +62,10 @@ har-stitcher-app/
 ├── styles.css         # Modern dark-themed styling, chips, badges, and code diff view
 ├── stitcher.js        # Universal core engine (Browser & Node.js compatible)
 ├── app.js             # UI controller, state management, file export & sample generator
+├── cli.js             # `har-stitch` command-line interface (wraps stitcher.js)
+├── package.json       # bin entry for `har-stitch` and `npm test` script
 ├── sample-test.js     # Comprehensive Node.js verification test suite
+├── cli-test.js        # CLI subprocess tests (flags, outputs, exit codes)
 └── README.md          # Implementation plan, diagnosis, and usage documentation
 ```
 
@@ -82,10 +85,32 @@ har-stitcher-app/
 3. Inspect the Trajectory Timeline, Discontinuities, and Manifest Diff.
 4. Click **"Download Patched .har"** and load it directly into `har-player`!
 
-### Option B: Node.js Test Suite & Scripting
-Run the unit test suite to verify timeline correlation, discontinuity injection, and HAR patching:
+### Option B: Command Line (`har-stitch`)
+The CLI is a thin wrapper around the same `stitcher.js` engine used by the web app, so both produce the same patched HAR. It needs Node.js ≥ 14 and has no dependencies.
+
 ```bash
-node sample-test.js
+node cli.js recording.har                 # writes recording.stitched.har
+./cli.js recording.har -o fixed.har --m3u8 stitched_trajectory.m3u8
+
+# Optional: install the `har-stitch` command globally from this folder
+npm link
+har-stitch recording.har --json
+```
+
+| Option | Description |
+|---|---|
+| `-o, --output <path>` | Patched HAR path (default: `<input>.stitched.har`) |
+| `--m3u8 <path>` | Also write the stitched `.m3u8` playlist |
+| `--absolute-urls` | Write resolved absolute segment URLs in the stitched playlist |
+| `--force` | Overwrite existing output files |
+| `--quiet` / `--json` | Silence output / print the summary as JSON |
+
+Exit codes: `0` success, `1` usage/input error or output exists without `--force`, `2` no stitchable segments found (nothing written).
+
+### Option C: Node.js Test Suite & Scripting
+Run the test suites (engine + CLI):
+```bash
+npm test        # or: node sample-test.js && node cli-test.js
 ```
 
 ### Programmatic Usage via JavaScript / Node:
